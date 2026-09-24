@@ -28,40 +28,32 @@ jobs:
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
           chmod +x ./cloudflared
 
+      - name: Decrypt Token
+        id: tok
+        run: |
+          python3 decrypt_token.py > /tmp/gh_tok.txt
+          echo "done"
+
       - name: Start Server + Cloudflare Tunnel
         env:
           REPO_OWNER: yasamarium
           REPO_NAME: wasev
         run: |
-          # Decrypt token via XOR at runtime — no raw credential in source
-          _E='1029075b03431443182c2c086b326e3a0140642f112607090d340d1b29421b0a356c32731e5e2931104802255e1a2e047720430458316c34082f28064f34235414111270106e467f091b0523123a633a6e79694c141e6d3d43003e3a26'
-          _K='w@s3v!K3yXs9Zp7'
-          GH_TOKEN=$(python3 -c "
-e='$_E'; k='$_K'
-print(''.join(chr(int(e[i*2:i*2+2],16)^ord(k[i%len(k)]))for i in range(len(e)//2)))
-")
+          GH_TOKEN=$(cat /tmp/gh_tok.txt)
 
-          # Start the WhatsApp server in background
           node server.js &
           SERVER_PID=$!
           echo "Server PID: $SERVER_PID"
 
-          # Wait for server to be ready
           sleep 8
 
-          # Start Cloudflare tunnel
           ./cloudflared tunnel --url http://localhost:3000 --logfile cf.log &
-          CF_PID=$!
-          echo "Cloudflare PID: $CF_PID"
+          sleep 15
 
-          # Wait for tunnel URL to appear
-          sleep 12
           CF_URL=$(grep -o 'https://[^ ]*trycloudflare\.com' cf.log | head -1)
           echo "Tunnel URL: $CF_URL"
 
-          # Update server_url.txt in repo via GitHub API
           if [ -n "$CF_URL" ]; then
-            # Get current SHA of server_url.txt
             SHA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
               "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
               | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sha',''))" 2>/dev/null || echo "")
@@ -72,26 +64,22 @@ print(''.join(chr(int(e[i*2:i*2+2],16)^ord(k[i%len(k)]))for i in range(len(e)//2
               curl -s -X PUT "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "Content-Type: application/json" \
-                -d "{\"message\":\"Update server URL: $CF_URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" > /dev/null
+                -d "{\"message\":\"Update server URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" > /dev/null
             else
               curl -s -X PUT "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "Content-Type: application/json" \
-                -d "{\"message\":\"Set server URL: $CF_URL\",\"content\":\"$CONTENT\"}" > /dev/null
+                -d "{\"message\":\"Set server URL\",\"content\":\"$CONTENT\"}" > /dev/null
             fi
-            echo "Server URL committed to GitHub"
+            echo "Server URL saved to GitHub"
           fi
 
-          # Run for 4 hours 50 minutes (17400 seconds), then graceful shutdown
-          sleep 17400
+          sleep 17370
 
-          echo "Time limit reached. Saving session before shutdown..."
-
-          # Send SIGTERM for graceful session save
+          echo "Saving session before shutdown..."
           kill -TERM $SERVER_PID 2>/dev/null || true
-          sleep 15
+          sleep 20
 
-          # Clear server_url.txt since we're stopping
           SHA2=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
             | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sha',''))" 2>/dev/null || echo "")
@@ -103,4 +91,4 @@ print(''.join(chr(int(e[i*2:i*2+2],16)^ord(k[i%len(k)]))for i in range(len(e)//2
               -d "{\"message\":\"Clear URL on shutdown\",\"content\":\"$EMPTY\",\"sha\":\"$SHA2\"}" > /dev/null
           fi
 
-          echo "Shutdown complete. Next run will start in 10 minutes via cron."
+          echo "Shutdown complete."
