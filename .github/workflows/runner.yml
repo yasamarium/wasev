@@ -18,7 +18,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install Dependencies
         run: npm install
@@ -93,26 +92,28 @@ jobs:
       - name: Graceful Shutdown
         if: always()
         run: |
-          GH_TOKEN=$(cat /tmp/gh_tok.txt)
-          REPO_OWNER=yasamarium
-          REPO_NAME=wasev
-
-          SERVER_PID=$(cat /tmp/server_pid.txt 2>/dev/null || echo "")
-          if [ -n "$SERVER_PID" ]; then
-            echo "Sending SIGTERM to server PID $SERVER_PID..."
-            kill -TERM $SERVER_PID 2>/dev/null || true
-            sleep 15
+          if [ -f /tmp/server_pid.txt ]; then
+            SERVER_PID=$(cat /tmp/server_pid.txt 2>/dev/null || echo "")
+            if [ -n "$SERVER_PID" ]; then
+              echo "Sending SIGTERM to server PID $SERVER_PID..."
+              kill -TERM $SERVER_PID 2>/dev/null || true
+              sleep 15
+            fi
           fi
 
-          SHA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sha',''))" 2>/dev/null || echo "")
-
-          EMPTY=$(echo -n "" | base64 -w 0)
-          if [ -n "$SHA" ]; then
-            curl -s -X PUT "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "{\"message\":\"Server offline\",\"content\":\"$EMPTY\",\"sha\":\"$SHA\"}" > /dev/null
-            echo "Server URL cleared."
+          if [ -f /tmp/gh_tok.txt ]; then
+            GH_TOKEN=$(cat /tmp/gh_tok.txt)
+            REPO_OWNER=yasamarium
+            REPO_NAME=wasev
+            SHA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sha',''))" 2>/dev/null || echo "")
+            EMPTY=$(echo -n "" | base64 -w 0)
+            if [ -n "$SHA" ]; then
+              curl -s -X PUT "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"message\":\"Server offline\",\"content\":\"$EMPTY\",\"sha\":\"$SHA\"}" > /dev/null
+              echo "Server URL cleared."
+            fi
           fi
