@@ -1,0 +1,19 @@
+{
+  "name": "wasev",
+  "version": "1.0.0",
+  "description": "WhatsApp Session Server using Baileys",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "express": "^4.19.2",
+    "qrcode": "^1.5.3",
+    "@hapi/boom": "^10.0.1",
+    "pino": "^9.3.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
