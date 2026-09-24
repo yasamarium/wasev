@@ -29,66 +29,90 @@ jobs:
           chmod +x ./cloudflared
 
       - name: Decrypt Token
-        id: tok
+        run: python3 decrypt_token.py > /tmp/gh_tok.txt
+
+      - name: Start Server
         run: |
-          python3 decrypt_token.py > /tmp/gh_tok.txt
-          echo "done"
+          node server.js > server.log 2>&1 &
+          echo $! > /tmp/server_pid.txt
+          sleep 6
+          echo "Server started"
 
-      - name: Start Server + Cloudflare Tunnel
-        env:
-          REPO_OWNER: yasamarium
-          REPO_NAME: wasev
+      - name: Start Cloudflare Tunnel and Get URL
         run: |
-          GH_TOKEN=$(cat /tmp/gh_tok.txt)
+          ./cloudflared tunnel --url http://localhost:3000 > cf.log 2>&1 &
+          echo $! > /tmp/cf_pid.txt
 
-          node server.js &
-          SERVER_PID=$!
-          echo "Server PID: $SERVER_PID"
-
-          sleep 8
-
-          ./cloudflared tunnel --url http://localhost:3000 --logfile cf.log &
-          sleep 15
-
-          CF_URL=$(grep -o 'https://[^ ]*trycloudflare\.com' cf.log | head -1)
-          echo "Tunnel URL: $CF_URL"
-
-          if [ -n "$CF_URL" ]; then
-            SHA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-              "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
-              | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sha',''))" 2>/dev/null || echo "")
-
-            CONTENT=$(echo -n "$CF_URL" | base64 -w 0)
-
-            if [ -n "$SHA" ]; then
-              curl -s -X PUT "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d "{\"message\":\"Update server URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" > /dev/null
-            else
-              curl -s -X PUT "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d "{\"message\":\"Set server URL\",\"content\":\"$CONTENT\"}" > /dev/null
+          echo "Waiting for Cloudflare tunnel URL..."
+          CF_URL=""
+          for i in $(seq 1 40); do
+            CF_URL=$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' cf.log 2>/dev/null | head -1)
+            if [ -n "$CF_URL" ]; then
+              echo "URL found after ${i}s: $CF_URL"
+              break
             fi
-            echo "Server URL saved to GitHub"
+            sleep 1
+          done
+
+          if [ -z "$CF_URL" ]; then
+            echo "ERROR: Could not get Cloudflare URL after 40s"
+            cat cf.log
+            exit 1
           fi
 
-          sleep 17370
+          GH_TOKEN=$(cat /tmp/gh_tok.txt)
+          REPO_OWNER=yasamarium
+          REPO_NAME=wasev
 
-          echo "Saving session before shutdown..."
-          kill -TERM $SERVER_PID 2>/dev/null || true
-          sleep 20
-
-          SHA2=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+          SHA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
             | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sha',''))" 2>/dev/null || echo "")
-          EMPTY=$(echo -n "" | base64 -w 0)
-          if [ -n "$SHA2" ]; then
+
+          CONTENT=$(echo -n "$CF_URL" | base64 -w 0)
+
+          if [ -n "$SHA" ]; then
             curl -s -X PUT "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"message\":\"Clear URL on shutdown\",\"content\":\"$EMPTY\",\"sha\":\"$SHA2\"}" > /dev/null
+              -d "{\"message\":\"Server online: $CF_URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" > /dev/null
+          else
+            curl -s -X PUT "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"message\":\"Server online: $CF_URL\",\"content\":\"$CONTENT\"}" > /dev/null
           fi
 
-          echo "Shutdown complete."
+          echo "Server URL saved: $CF_URL"
+          echo "CF_URL=$CF_URL" >> $GITHUB_ENV
+
+      - name: Keep Server Running (4h 50m)
+        run: |
+          echo "Server is live at $CF_URL"
+          sleep 17400
+
+      - name: Graceful Shutdown
+        if: always()
+        run: |
+          GH_TOKEN=$(cat /tmp/gh_tok.txt)
+          REPO_OWNER=yasamarium
+          REPO_NAME=wasev
+
+          SERVER_PID=$(cat /tmp/server_pid.txt 2>/dev/null || echo "")
+          if [ -n "$SERVER_PID" ]; then
+            echo "Sending SIGTERM to server PID $SERVER_PID..."
+            kill -TERM $SERVER_PID 2>/dev/null || true
+            sleep 15
+          fi
+
+          SHA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sha',''))" 2>/dev/null || echo "")
+
+          EMPTY=$(echo -n "" | base64 -w 0)
+          if [ -n "$SHA" ]; then
+            curl -s -X PUT "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/server_url.txt" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"message\":\"Server offline\",\"content\":\"$EMPTY\",\"sha\":\"$SHA\"}" > /dev/null
+            echo "Server URL cleared."
+          fi
